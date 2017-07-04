@@ -104,7 +104,6 @@ except ImportError:
             doctag_vectors = model.docvecs.doctag_syn0
         if doctag_locks is None:
             doctag_locks = model.docvecs.doctag_syn0_lockf
-
         if train_words and learn_words:
             train_batch_sg(model, [doc_words], alpha, work)
         for doctag_index in doctag_indexes:
@@ -154,7 +153,8 @@ except ImportError:
         for pos, word in enumerate(word_vocabs):
             reduced_window = model.random.randint(model.window)  # `b` in the original doc2vec code
             start = max(0, pos - model.window + reduced_window)
-            window_pos = enumerate(word_vocabs[start:(pos + model.window + 1 - reduced_window)], start)
+            end = (pos + model.window + 1 - reduced_window) if not model.asymmetric_window else pos
+            window_pos = enumerate(word_vocabs[start:end], start)
             word2_indexes = [word2.index for pos2, word2 in window_pos if pos2 != pos]
             l1 = np_sum(word_vectors[word2_indexes], axis=0) + np_sum(doctag_vectors[doctag_indexes], axis=0)
             count = len(word2_indexes) + len(doctag_indexes)
@@ -219,10 +219,16 @@ except ImportError:
         )
 
         for pos in range(pre_pad_count, len(padded_document_indexes) - post_pad_count):
-            word_context_indexes = (
-                padded_document_indexes[(pos - pre_pad_count): pos]  # preceding words
-                + padded_document_indexes[(pos + 1):(pos + 1 + post_pad_count)]  # following words
-            )
+            if model.asymmetric_window:
+                word_context_indexes = (
+                    padded_document_indexes[(pos - pre_pad_count): pos]  # preceding words
+                )
+            else:
+                word_context_indexes = (
+                    padded_document_indexes[(pos - pre_pad_count): pos]  # preceding words
+                    + padded_document_indexes[(pos + 1):(pos + 1 + post_pad_count)]  # following words
+                )
+
             word_context_len = len(word_context_indexes)
             predict_word = model.wv.vocab[model.wv.index2word[padded_document_indexes[pos]]]
             # numpy advanced-indexing copies; concatenate, flatten to 1d
@@ -255,7 +261,6 @@ class TaggedDocument(namedtuple('TaggedDocument', 'words tags')):
     """
     def __str__(self):
         return '%s(%s, %s)' % (self.__class__.__name__, self.words, self.tags)
-
 
 # for compatibility
 class LabeledSentence(TaggedDocument):
@@ -546,7 +551,8 @@ class Doc2Vec(Word2Vec):
     """Class for training, using and evaluating neural networks described in http://arxiv.org/pdf/1405.4053v2.pdf"""
     def __init__(self, documents=None, dm_mean=None,
                  dm=1, dbow_words=0, dm_concat=0, dm_tag_count=1,
-                 docvecs=None, docvecs_mapfile=None, comment=None, trim_rule=None, **kwargs):
+                 docvecs=None, docvecs_mapfile=None, comment=None,
+                 trim_rule=None, **kwargs):
         """
         Initialize the model from an iterable of `documents`. Each document is a
         TaggedDocument object that will be used for training.
@@ -614,6 +620,9 @@ class Doc2Vec(Word2Vec):
         returns either util.RULE_DISCARD, util.RULE_KEEP or util.RULE_DEFAULT.
         Note: The rule, if given, is only used prune vocabulary during build_vocab() and is not stored as part
         of the model.
+
+        `asymmetric_window` = should the window be on both sides (0), or just from the left (1);
+        default 0
         """
 
         if 'sentences' in kwargs:
@@ -632,8 +641,9 @@ class Doc2Vec(Word2Vec):
         self.dbow_words = dbow_words
         self.dm_concat = dm_concat
         self.dm_tag_count = dm_tag_count
+        self.window_multiplier = 1 if self.asymmetric_window else 2
         if self.dm and self.dm_concat:
-            self.layer1_size = (self.dm_tag_count + (2 * self.window)) * self.vector_size
+            self.layer1_size = (self.dm_tag_count + (self.window_multiplier * self.window)) * self.vector_size
 
         self.docvecs = docvecs or DocvecsArray(docvecs_mapfile)
         self.comment = comment
@@ -656,7 +666,7 @@ class Doc2Vec(Word2Vec):
     def reset_weights(self):
         if self.dm and self.dm_concat:
             # expand l1 size to match concatenated tags+words length
-            self.layer1_size = (self.dm_tag_count + (2 * self.window)) * self.vector_size
+            self.layer1_size = (self.dm_tag_count + (self.window_multiplier * self.window)) * self.vector_size
             logger.info("using concatenative %d-dimensional layer1" % (self.layer1_size))
         super(Doc2Vec, self).reset_weights()
         self.docvecs.reset_weights(self)

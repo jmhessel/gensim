@@ -160,7 +160,8 @@ except ImportError:
 
                 # now go over all words from the (reduced) window, predicting each one in turn
                 start = max(0, pos - model.window + reduced_window)
-                for pos2, word2 in enumerate(word_vocabs[start:(pos + model.window + 1 - reduced_window)], start):
+                end = (pos + model.window + 1 - reduced_window) if not self.asymmetric_window else pos
+                for pos2, word2 in enumerate(word_vocabs[start:end], start):
                     # don't train on the `word` itself
                     if pos2 != pos:
                         train_sg_pair(model, model.wv.index2word[word.index], word2.index, alpha, compute_loss=compute_loss)
@@ -186,7 +187,8 @@ except ImportError:
             for pos, word in enumerate(word_vocabs):
                 reduced_window = model.random.randint(model.window)  # `b` in the original word2vec code
                 start = max(0, pos - model.window + reduced_window)
-                window_pos = enumerate(word_vocabs[start:(pos + model.window + 1 - reduced_window)], start)
+                end = (pos + model.window + 1 - reduced_window) if not self.asymmetric_window else pos
+                window_pos = enumerate(word_vocabs[start:end], start)
                 word2_indices = [word2.index for pos2, word2 in window_pos if (word2 is not None and pos2 != pos)]
                 l1 = np_sum(model.wv.syn0[word2_indices], axis=0)  # 1 x vector_size
                 if word2_indices and model.cbow_mean:
@@ -217,7 +219,8 @@ except ImportError:
 
             # now go over all words from the window, predicting each one in turn
             start = max(0, pos - model.window)
-            for pos2, word2 in enumerate(word_vocabs[start : pos + model.window + 1], start):
+            end = (pos + model.window + 1 - reduced_window) if not self.asymmetric_window else pos
+            for pos2, word2 in enumerate(word_vocabs[start : end], start):
                 # don't train on OOV words and on the `word` itself
                 if word2 is not None and pos2 != pos:
                     log_prob_sentence += score_sg_pair(model, word, word2)
@@ -245,7 +248,8 @@ except ImportError:
                 continue  # OOV word in the input sentence => skip
 
             start = max(0, pos - model.window)
-            window_pos = enumerate(word_vocabs[start:(pos + model.window + 1)], start)
+            end = (pos + model.window + 1 - reduced_window) if not self.asymmetric_window else pos
+            window_pos = enumerate(word_vocabs[start:end], start)
             word2_indices = [word2.index for pos2, word2 in window_pos if (word2 is not None and pos2 != pos)]
             l1 = np_sum(model.wv.syn0[word2_indices], axis=0)  # 1 x layer1_size
             if word2_indices and model.cbow_mean:
@@ -391,7 +395,8 @@ class Word2Vec(utils.SaveLoad):
             self, sentences=None, size=100, alpha=0.025, window=5, min_count=5,
             max_vocab_size=None, sample=1e-3, seed=1, workers=3, min_alpha=0.0001,
             sg=0, hs=0, negative=5, cbow_mean=1, hashfxn=hash, iter=5, null_word=0,
-            trim_rule=None, sorted_vocab=1, batch_words=MAX_WORDS_IN_BATCH, compute_loss=False):
+            trim_rule=None, sorted_vocab=1, batch_words=MAX_WORDS_IN_BATCH, compute_loss=False,
+            asymmetric_window=False):
         """
         Initialize the model from an iterable of `sentences`. Each sentence is a
         list of words (unicode strings) that will be used for training.
@@ -460,6 +465,9 @@ class Word2Vec(utils.SaveLoad):
         thus cython routines). Default is 10000. (Larger batches will be passed if individual
         texts are longer than 10000 words, but the standard cython code truncates to that maximum.)
 
+        `asymmetric_window` = should the window be on both sides (0), or just from the left (1);
+        default 0
+
         """
 
         self.load = call_on_class_only
@@ -499,6 +507,8 @@ class Word2Vec(utils.SaveLoad):
         self.model_trimmed_post_training = False
         self.compute_loss = compute_loss
         self.running_training_loss = 0
+        self.asymmetric_window = asymmetric_window
+
         if sentences is not None:
             if isinstance(sentences, GeneratorType):
                 raise TypeError("You can't pass a generator as the sentences argument. Try an iterator.")

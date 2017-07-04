@@ -312,6 +312,7 @@ def train_batch_sg(model, sentences, alpha, _work, compute_loss):
     cdef np.uint32_t reduced_windows[MAX_SENTENCE_LEN]
     cdef int sentence_idx[MAX_SENTENCE_LEN + 1]
     cdef int window = model.window
+    cdef int asymmetric_window = model.window
 
     cdef int i, j, k
     cdef int effective_words = 0, effective_sentences = 0
@@ -385,7 +386,10 @@ def train_batch_sg(model, sentences, alpha, _work, compute_loss):
                 j = i - window + reduced_windows[i]
                 if j < idx_start:
                     j = idx_start
-                k = i + window + 1 - reduced_windows[i]
+                if asymmetric_window:
+                    k = i
+                else:
+                    k = i + window + 1 - reduced_windows[i]
                 if k > idx_end:
                     k = idx_end
                 for j in range(j, k):
@@ -420,6 +424,7 @@ def train_batch_cbow(model, sentences, alpha, _work, _neu1, compute_loss):
     cdef np.uint32_t reduced_windows[MAX_SENTENCE_LEN]
     cdef int sentence_idx[MAX_SENTENCE_LEN + 1]
     cdef int window = model.window
+    cdef int asymmetric_window = model.asymmetric_window
 
     cdef int i, j, k
     cdef int effective_words = 0, effective_sentences = 0
@@ -517,6 +522,7 @@ def score_sentence_sg(model, sentence, _work):
     cdef np.uint32_t indexes[MAX_SENTENCE_LEN]
     cdef int sentence_len
     cdef int window = model.window
+    cdef int asymmetric_window = model.asymmetric_window
 
     cdef int i, j, k
     cdef long result = 0
@@ -556,7 +562,10 @@ def score_sentence_sg(model, sentence, _work):
             j = i - window
             if j < 0:
                 j = 0
-            k = i + window + 1
+            if asymmetric_window:
+                k = i
+            else:
+                k = i + window + 1
             if k > sentence_len:
                 k = sentence_len
             for j in range(j, k):
@@ -598,6 +607,7 @@ def score_sentence_cbow(model, sentence, _work, _neu1):
     cdef np.uint32_t indexes[MAX_SENTENCE_LEN]
     cdef int sentence_len
     cdef int window = model.window
+    cdef int asymmetric_window = model.asymmetric_window
 
     cdef int i, j, k
     cdef long result = 0
@@ -638,7 +648,10 @@ def score_sentence_cbow(model, sentence, _work, _neu1):
             j = i - window
             if j < 0:
                 j = 0
-            k = i + window + 1
+            if asymmetric_window:
+                k = i
+            else:
+                k = i + window + 1
             if k > sentence_len:
                 k = sentence_len
             score_pair_cbow_hs(points[i], codes[i], codelens, neu1, syn0, syn1, size, indexes, work, i, j, k, cbow_mean)

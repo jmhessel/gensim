@@ -176,9 +176,11 @@ cdef void fast_document_dmc_hs(
     # work accumulates net l1 error; eventually applied by caller
     for b in range(word_code_len):
         row2 = word_point[b] * layer1_size
+
         f = our_dot(&layer1_size, neu1, &ONE, &syn1[row2], &ONE)
         if f <= -MAX_EXP or f >= MAX_EXP:
             continue
+
         f = EXP_TABLE[<int>((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]
         g = (1 - word_code[b] - f) * alpha
         our_saxpy(&layer1_size, &g, &syn1[row2], &ONE, work, &ONE)
@@ -250,6 +252,7 @@ def train_document_dbow(model, doc_words, doctag_indexes, alpha, work=None,
     cdef int document_len
     cdef int doctag_len
     cdef int window = model.window
+    cdef int asymmetric_window = model.asymmetric_window
 
     cdef int i, j
     cdef unsigned long long r
@@ -331,7 +334,10 @@ def train_document_dbow(model, doc_words, doctag_indexes, alpha, work=None,
                 j = i - window + reduced_windows[i]
                 if j < 0:
                     j = 0
-                k = i + window + 1 - reduced_windows[i]
+                if asymmetric_window:
+                    k = i
+                else:
+                    k = i + window + 1 - reduced_windows[i]
                 if k > document_len:
                     k = document_len
                 for j in range(j, k):
@@ -388,6 +394,7 @@ def train_document_dm(model, doc_words, doctag_indexes, alpha, work=None, neu1=N
     cdef int document_len
     cdef int doctag_len
     cdef int window = model.window
+    cdef int asymmetric_window = model.asymmetric_window
 
     cdef int i, j, k, m
     cdef long result = 0
@@ -469,7 +476,10 @@ def train_document_dm(model, doc_words, doctag_indexes, alpha, work=None, neu1=N
             j = i - window + reduced_windows[i]
             if j < 0:
                 j = 0
-            k = i + window + 1 - reduced_windows[i]
+            if asymmetric_window:
+                k = i
+            else:
+                k = i + window + 1 - reduced_windows[i]
             if k > document_len:
                 k = document_len
 
@@ -545,6 +555,8 @@ def train_document_dm_concat(model, doc_words, doctag_indexes, alpha, work=None,
     cdef int doctag_len
     cdef int window = model.window
     cdef int expected_doctag_len = model.dm_tag_count
+    cdef int asymmetric_window = model.asymmetric_window
+    cdef int window_multiplier = model.window_multiplier
 
     cdef int i, j, k, m, n
     cdef long result = 0
@@ -624,26 +636,32 @@ def train_document_dm_concat(model, doc_words, doctag_indexes, alpha, work=None,
     with nogil:
         for i in range(document_len):
             j = i - window      # negative OK: will pad with null word
-            k = i + window + 1  # past document end OK: will pad with null word
+            if asymmetric_window:
+                k = i
+            else:
+                k = i + window + 1 # past document end OK: will pad with null word
 
             # compose l1 & clear work
             for m in range(doctag_len):
                 # doc vector(s)
                 memcpy(&_neu1[m * vector_size], &_doctag_vectors[_doctag_indexes[m] * vector_size],
                        vector_size * cython.sizeof(REAL_t))
+
             n = 0
             for m in range(j, k):
                 # word vectors in window
                 if m == i:
                     continue
                 if m < 0 or m >= document_len:
-                    window_indexes[n] =  null_word_index
+                    window_indexes[n] = null_word_index
                 else:
                     window_indexes[n] = indexes[m]
                 n = n + 1
-            for m in range(2 * window):
+
+            for m in range(window_multiplier * window):
                 memcpy(&_neu1[(doctag_len + m) * vector_size], &_word_vectors[window_indexes[m] * vector_size],
                        vector_size * cython.sizeof(REAL_t))
+
             memset(_work, 0, layer1_size * cython.sizeof(REAL_t))  # work to accumulate l1 error
 
             if hs:
@@ -654,7 +672,6 @@ def train_document_dm_concat(model, doc_words, doctag_indexes, alpha, work=None,
                 next_random = fast_document_dmc_neg(negative, cum_table, cum_table_len, next_random,
                                                     _neu1, syn1neg, indexes[i], _alpha, _work,
                                                    layer1_size, vector_size, _learn_hidden)
-
             if _learn_doctags:
                 for m in range(doctag_len):
                     our_saxpy(&vector_size, &_doctag_locks[_doctag_indexes[m]], &_work[m * vector_size],
