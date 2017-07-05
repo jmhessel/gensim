@@ -36,12 +36,15 @@ from six import string_types, integer_types
 
 logger = logging.getLogger(__name__)
 
+from gensim.models.meta_doc2vec_inner import train_meta_document_dm_concat, train_meta_document_dm, get_max_feature_size
+
 try:
-    from gensim.models.meta_doc2vec_inner import train_meta_document_dm_concat, train_meta_document_dm, train_meta_document_dbow, get_max_feature_size
+    from gensim.models.meta_doc2vec_inner import train_meta_document_dm_concat, train_meta_document_dm, get_max_feature_size
     #from gensim.models.doc2vec_inner import train_document_dbow, train_document_dm, train_document_dm_concat
     #from gensim.models.word2vec_inner import FAST_VERSION  # blas-adaptation shared from word2vec
     logger.debug('Fast version of {0} is being used'.format(__name__))
 except ImportError:
+    quit()
     logger.warning('Slow version of {0} is being used'.format(__name__))
     # failed... fall back to plain numpy (20-80x slower training than the above)
     FAST_VERSION = -1
@@ -257,7 +260,7 @@ class MetaDoc2Vec(Doc2Vec):
 
         super(MetaDoc2Vec, self).__init__(size=size, trim_rule=trim_rule, dm_concat=dm_concat, **kwargs)
 
-        if (not dm_concat and meta_size != size) or self.sg:
+        if not dm_concat and meta_size != size:
             print("In this mode, please make sure that meta_size and the wv dim are the same.")
             quit()
 

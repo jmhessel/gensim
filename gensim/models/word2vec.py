@@ -227,7 +227,7 @@ except ImportError:
 
         return log_prob_sentence
 
-    def score_sentence_cbow(model, sentence, alpha, work=None, neu1=None):
+    def score_sentence_cbow(model, sentence, work=None, neu1=None):
         """
         Obtain likelihood score for a single sentence in a fitted CBOW representaion.
 
@@ -248,13 +248,13 @@ except ImportError:
                 continue  # OOV word in the input sentence => skip
 
             start = max(0, pos - model.window)
-            end = (pos + model.window + 1 - reduced_window) if not self.asymmetric_window else pos
+            end = (pos + model.window + 1) if not self.asymmetric_window else pos
             window_pos = enumerate(word_vocabs[start:end], start)
             word2_indices = [word2.index for pos2, word2 in window_pos if (word2 is not None and pos2 != pos)]
             l1 = np_sum(model.wv.syn0[word2_indices], axis=0)  # 1 x layer1_size
             if word2_indices and model.cbow_mean:
                 l1 /= len(word2_indices)
-            log_prob_sentence += score_cbow_pair(model, word, word2_indices, l1)
+            log_prob_sentence += score_cbow_pair(model, word, l1)
 
         return log_prob_sentence
 
@@ -371,7 +371,7 @@ def score_sg_pair(model, word, word2):
     return sum(lprob)
 
 
-def score_cbow_pair(model, word, word2_indices, l1):
+def score_cbow_pair(model, word, l1):
     l2a = model.syn1[word.point]  # 2d matrix, codelen x layer1_size
     sgn = (-1.0)**word.code  # ch function, 0-> 1, 1 -> -1
     lprob = -logaddexp(0, -sgn * dot(l1, l2a.T))
