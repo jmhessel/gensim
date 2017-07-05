@@ -249,7 +249,7 @@ setup(
             include_dirs=[model_dir]),
         Extension('gensim.models.doc2vec_inner',
             sources=['./gensim/models/doc2vec_inner.c'],
-            include_dirs=[model_dir])
+            include_dirs=[model_dir]),
         Extension('gensim.models.meta_doc2vec_inner',
             sources=['./gensim/models/meta_doc2vec_inner.c'],
             include_dirs=[model_dir])
