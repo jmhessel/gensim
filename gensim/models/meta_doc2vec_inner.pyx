@@ -31,6 +31,10 @@ from word2vec_inner cimport bisect_left, random_int32, \
 from word2vec import FAST_VERSION
 
 DEF MAX_DOCUMENT_LEN = 10000
+DEF MAX_FEATURE_SIZE = 10000
+
+def get_max_feature_size():
+    return MAX_FEATURE_SIZE
 
 cdef int ONE = 1
 cdef REAL_t ONEF = <REAL_t>1.0
@@ -366,9 +370,9 @@ def train_document_dbow(model, doc_words, doctag_indexes, alpha, work=None,
     return result
 
 
-def train_document_dm(model, doc_words, doctag_indexes, alpha, work=None, neu1=None,
-                      learn_doctags=True, learn_words=True, learn_hidden=True,
-                      word_vectors=None, word_locks=None, doctag_vectors=None, doctag_locks=None):
+def train_meta_document_dm(model, doc_words, doctag_indexes, np.ndarray[REAL_t] doc_features, alpha, work=None, neu1=None,
+                           learn_doctags=True, learn_words=True, learn_hidden=True,
+                           word_vectors=None, word_locks=None, doctag_vectors=None, doctag_locks=None):
     cdef int hs = model.hs
     cdef int negative = model.negative
     cdef int sample = (model.sample != 0)
@@ -391,6 +395,7 @@ def train_document_dm(model, doc_words, doctag_indexes, alpha, work=None, neu1=N
     cdef np.uint32_t indexes[MAX_DOCUMENT_LEN]
     cdef np.uint32_t _doctag_indexes[MAX_DOCUMENT_LEN]
     cdef np.uint32_t reduced_windows[MAX_DOCUMENT_LEN]
+    cdef REAL_t _doc_features[MAX_FEATURE_SIZE]
     cdef int document_len
     cdef int doctag_len
     cdef int window = model.window
@@ -441,6 +446,10 @@ def train_document_dm(model, doc_words, doctag_indexes, alpha, work=None, neu1=N
     if neu1 is None:
        neu1 = zeros(model.layer1_size, dtype=REAL)
     _neu1 = <REAL_t *>np.PyArray_DATA(neu1)
+
+    # for the meta features...
+    for i in range(model.meta_size):
+        _doc_features[i] = doc_features[i]
 
     vlookup = model.wv.vocab
     i = 0
@@ -495,6 +504,10 @@ def train_document_dm(model, doc_words, doctag_indexes, alpha, work=None, neu1=N
             for m in range(doctag_len):
                 count += ONEF
                 our_saxpy(&size, &ONEF, &_doctag_vectors[_doctag_indexes[m] * size], &ONE, _neu1, &ONE)
+
+            our_saxpy(&size, &ONEF, &_doc_features[0], &ONE, _neu1, &ONE)
+            count += ONEF
+
             if count > (<REAL_t>0.5):
                 inv_count = ONEF/count
             if cbow_mean:
@@ -527,9 +540,11 @@ def train_document_dm(model, doc_words, doctag_indexes, alpha, work=None, neu1=N
     return result
 
 
-def train_meta_document_dm_concat(model, doc_words, doctag_indexes, doc_features, alpha, work=None, neu1=None,
+def train_meta_document_dm_concat(model, doc_words, doctag_indexes, np.ndarray[REAL_t] doc_features,
+                                  alpha, work=None, neu1=None,
                                   learn_doctags=True, learn_words=True, learn_hidden=True,
                                   word_vectors=None, word_locks=None, doctag_vectors=None, doctag_locks=None):
+
     cdef int hs = model.hs
     cdef int negative = model.negative
     cdef int sample = (model.sample != 0)
@@ -552,6 +567,7 @@ def train_meta_document_dm_concat(model, doc_words, doctag_indexes, doc_features
     cdef np.uint32_t indexes[MAX_DOCUMENT_LEN]
     cdef np.uint32_t _doctag_indexes[MAX_DOCUMENT_LEN]
     cdef np.uint32_t window_indexes[MAX_DOCUMENT_LEN]
+    cdef REAL_t _doc_features[MAX_FEATURE_SIZE]
     cdef int document_len
     cdef int doctag_len
     cdef int window = model.window
@@ -611,7 +627,8 @@ def train_meta_document_dm_concat(model, doc_words, doctag_indexes, doc_features
     _neu1 = <REAL_t *>np.PyArray_DATA(neu1)
 
     # for the meta features...
-    _doc_features = <REAL_t *>np.PyArray_DATA(doc_features)
+    for i in range(model.meta_size):
+        _doc_features[i] = doc_features[i]
 
     vlookup = model.wv.vocab
     i = 0

@@ -36,18 +36,18 @@ from six import string_types, integer_types
 
 logger = logging.getLogger(__name__)
 
-from gensim.models.meta_doc2vec_inner import train_meta_document_dm_concat
-
 try:
-    from gensim.models.meta_doc2vec_inner import train_meta_document_dm_concat
+    from gensim.models.meta_doc2vec_inner import train_meta_document_dm_concat, train_meta_document_dm, train_meta_document_dbow, get_max_feature_size
     #from gensim.models.doc2vec_inner import train_document_dbow, train_document_dm, train_document_dm_concat
     #from gensim.models.word2vec_inner import FAST_VERSION  # blas-adaptation shared from word2vec
     logger.debug('Fast version of {0} is being used'.format(__name__))
 except ImportError:
-    quit()
     logger.warning('Slow version of {0} is being used'.format(__name__))
     # failed... fall back to plain numpy (20-80x slower training than the above)
     FAST_VERSION = -1
+
+    def get_max_feature_size():
+        return None
 
     def train_meta_document_dbow(model, doc_words, doctag_indexes, doc_features, alpha, work=None,
                                 train_words=False, learn_doctags=True, learn_words=True, learn_hidden=True,
@@ -73,7 +73,7 @@ except ImportError:
         will use the optimized version from doc2vec_inner instead.
 
         """
-        raise NotImplementedError()
+        raise NotImplementedError("DBOW not implemented for meta info just yet... what does it mean?")
         if doctag_vectors is None:
             doctag_vectors = model.docvecs.doctag_syn0
         if doctag_locks is None:
@@ -112,8 +112,6 @@ except ImportError:
         will use the optimized version from doc2vec_inner instead.
 
         """
-        raise NotImplementedError()
-
         if word_vectors is None:
             word_vectors = model.wv.syn0
         if word_locks is None:
@@ -132,8 +130,8 @@ except ImportError:
             end = (pos + model.window + 1 - reduced_window) if not model.asymmetric_window else pos
             window_pos = enumerate(word_vocabs[start:end], start)
             word2_indexes = [word2.index for pos2, word2 in window_pos if pos2 != pos]
-            l1 = np_sum(word_vectors[word2_indexes], axis=0) + np_sum(doctag_vectors[doctag_indexes], axis=0)
-            count = len(word2_indexes) + len(doctag_indexes)
+            l1 = np_sum(word_vectors[word2_indexes], axis=0) + np_sum(doctag_vectors[doctag_indexes], axis=0) + doc_features
+            count = len(word2_indexes) + len(doctag_indexes) + 1.
             if model.cbow_mean and count > 1 :
                 l1 /= count
             neu1e = train_cbow_pair(model, word, word2_indexes, l1, alpha,
@@ -246,7 +244,9 @@ class TaggedMetaDocument(namedtuple('TaggedMetaDocument', 'words tags features')
 
 class MetaDoc2Vec(Doc2Vec):
     """Class for training, using and evaluating neural networks described in http://arxiv.org/pdf/1405.4053v2.pdf"""
-    def __init__(self, documents=None,
+    def __init__(self,
+                 size,
+                 documents=None,
                  trim_rule=None,
                  dm_concat=1,
                  meta_size=None, **kwargs):
@@ -254,17 +254,25 @@ class MetaDoc2Vec(Doc2Vec):
         Initialize the model from an iterable of `documents`.
         meta_size gives the size of the meta features array per document.
         """
-        if not dm_concat:
-            print("Only concatenation is supported at the moment.")
-            print("Otherwise, you can use doc vecs with the same dimension as the word embeddings")
-            print("using vanilla doc2vec")
+
+        super(MetaDoc2Vec, self).__init__(size=size, trim_rule=trim_rule, dm_concat=dm_concat, **kwargs)
+
+        if (not dm_concat and meta_size != size) or self.sg:
+            print("In this mode, please make sure that meta_size and the wv dim are the same.")
             quit()
-        super(MetaDoc2Vec, self).__init__(trim_rule=trim_rule, dm_concat=dm_concat, **kwargs)
+
         self.meta_size = meta_size
+        max_size = get_max_feature_size()
+        if max_size is not None and self.meta_size > max_size:
+            print("Meta feature size bigger than the allowed max of {}".format(max_size))
+            print("Please increase this in meta_doc2vec_inner.pyx.")
+            quit()
         self.dm_concat = dm_concat
 
         if self.dm and self.dm_concat:
             self.layer1_size = (self.dm_tag_count + (self.window_multiplier * self.window)) * self.vector_size + self.meta_size
+
+
 
         if documents is not None:
             self.build_vocab(documents, trim_rule=trim_rule)
@@ -278,11 +286,6 @@ class MetaDoc2Vec(Doc2Vec):
         super(Doc2Vec, self).reset_weights()
         self.docvecs.reset_weights(self)
 
-    def reset_from(self, other_model):
-        """Reuse shareable structures from other_model."""
-        self.docvecs.borrow_from(other_model.docvecs)
-        super(Doc2Vec, self).reset_from(other_model)
-
     def _do_train_job(self, job, alpha, inits):
         work, neu1 = inits
         tally = 0
@@ -294,7 +297,6 @@ class MetaDoc2Vec(Doc2Vec):
                                                   train_words=self.dbow_words,
                                                   doctag_vectors=doctag_vectors, doctag_locks=doctag_locks)
             elif self.dm_concat:
-                print("HERE")
                 tally += train_meta_document_dm_concat(self, doc.words, doctag_indexes, doc.features, alpha, work, neu1,
                                                         doctag_vectors=doctag_vectors, doctag_locks=doctag_locks)
             else:
