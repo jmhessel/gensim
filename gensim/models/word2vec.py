@@ -378,7 +378,6 @@ def score_cbow_pair(model, word, l1):
     return sum(lprob)
 
 
-
 class Word2Vec(utils.SaveLoad):
     """
     Class for training, using and evaluating neural networks described in https://code.google.com/p/word2vec/

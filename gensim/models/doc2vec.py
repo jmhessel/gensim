@@ -250,42 +250,54 @@ except ImportError:
 
         return len(padded_document_indexes) - pre_pad_count - post_pad_count
 
-def score_sg_pair_doc(model, word, doc_i):
-    l1 = model.docvecs.doctag_syn0[doc_i]
-    l2a = deepcopy(model.syn1[word.point])  # 2d matrix, codelen x layer1_size
-    sgn = (-1.0)**word.code  # ch function, 0-> 1, 1 -> -1
-    lprob = -logaddexp(0, -sgn * dot(l1, l2a.T))
-    return sum(lprob)
-
-def score_document_sg(model, document, work=None):
+def score_document_dm_concat(model, doc_words, doctag_indexes, work=None, neu1=None):
     """
-    Obtain likelihood score for a single document in a fitted skip-gram representaion.
-    This corresponds to the DBOW model.
+    Obtain likelihood score for a single document in a fitted DBOW representaion.
 
     This is the non-optimized, Python version. If you have cython installed, gensim
     will use the optimized version from word2vec_inner instead.
 
     """
-    indexed_doctags = model.docvecs.indexed_doctags(document.tags)
-    doctag_indexes, doctag_vectors, _, _ = indexed_doctags
-    doctag_len = len(doctag_indexes)
-
     log_prob_sentence = 0.0
     if model.negative:
         raise RuntimeError("scoring is only available for HS=True")
 
-    word_vocabs = [model.wv.vocab[w] for w in document.words if w in model.wv.vocab]
+    doctag_vectors = model.docvecs.doctag_syn0
+    word_vectors = model.wv.syn0
 
-    for doctag_index in doctag_indexes:
-        for word in word_vocabs:
-            if word is None:
-                continue  # OOV word in the input sentence => skip
-            log_prob_sentence += score_sg_pair_doc(model, word, doctag_index)
+    doctag_len = len(doctag_indexes)
 
-    log_prob_sentence /= len(doctag_indexes)
+    word_vocabs = [model.wv.vocab[w] for w in doc_words if w in model.wv.vocab]
+
+    null_word = model.wv.vocab['\0']
+    pre_pad_count = model.window
+    post_pad_count = model.window
+    padded_document_indexes = (
+        (pre_pad_count * [null_word.index])  # pre-padding
+        + [word.index for word in word_vocabs if word is not None]  # elide out-of-Vocabulary words
+        + (post_pad_count * [null_word.index])  # post-padding
+    )
+
+    for pos in range(pre_pad_count, len(padded_document_indexes) - post_pad_count):
+        if model.asymmetric_window:
+            word_context_indexes = (
+                padded_document_indexes[(pos - pre_pad_count): pos]  # preceding words
+            )
+        else:
+            word_context_indexes = (
+                padded_document_indexes[(pos - pre_pad_count): pos]  # preceding words
+                + padded_document_indexes[(pos + 1):(pos + 1 + post_pad_count)]  # following words
+            )
+
+        word_context_len = len(word_context_indexes)
+        predict_word = model.wv.vocab[model.wv.index2word[padded_document_indexes[pos]]]
+        l1 = concatenate((doctag_vectors[doctag_indexes], word_vectors[word_context_indexes])).ravel()
+
+        log_prob_sentence += score_cbow_pair(model, predict_word, l1)
     return log_prob_sentence
 
-def score_document_cbow(model, document, work=None, neu1=None):
+
+def score_document_dm(model, doc_words, doctag_indexes, work=None, neu1=None):
     """
     Obtain likelihood score for a single document in a fitted CBOW representaion.
 
@@ -297,11 +309,10 @@ def score_document_cbow(model, document, work=None, neu1=None):
     if model.negative:
         raise RuntimeError("scoring is only available for HS=True")
 
-    indexed_doctags = model.docvecs.indexed_doctags(document.tags)
-    doctag_indexes, doctag_vectors, _, _ = indexed_doctags
+    doctag_vectors = model.docvecs.doctag_syn0
     doctag_len = len(doctag_indexes)
 
-    word_vocabs = [model.wv.vocab[w] for w in document.words if w in model.wv.vocab]
+    word_vocabs = [model.wv.vocab[w] for w in doc_words if w in model.wv.vocab]
     for pos, word in enumerate(word_vocabs):
         if word is None:
             continue  # OOV word in the input sentence => skip
@@ -316,6 +327,40 @@ def score_document_cbow(model, document, work=None, neu1=None):
         if model.cbow_mean and count > 1 :
             l1 /= count
         log_prob_sentence += score_cbow_pair(model, word, l1)
+    return log_prob_sentence
+
+def score_sg_pair_doc(model, word, doc_i):
+    l1 = model.docvecs.doctag_syn0[doc_i]
+    l2a = deepcopy(model.syn1[word.point])  # 2d matrix, codelen x layer1_size
+    sgn = (-1.0)**word.code  # ch function, 0-> 1, 1 -> -1
+    lprob = -logaddexp(0, -sgn * dot(l1, l2a.T))
+    return sum(lprob)
+
+def score_document_sg(model, doc_words, doctag_indexes, document, work=None):
+    """
+    Obtain likelihood score for a single document in a fitted skip-gram representaion.
+    This corresponds to the DBOW model.
+
+    This is the non-optimized, Python version. If you have cython installed, gensim
+    will use the optimized version from word2vec_inner instead.
+
+    """
+    log_prob_sentence = 0.0
+    if model.negative:
+        raise RuntimeError("scoring is only available for HS=True")
+
+    doctag_vectors = model.docvecs.doctag_syn0
+    doctag_len = len(doctag_indexes)
+
+    word_vocabs = [model.wv.vocab[w] for w in doc_words if w in model.wv.vocab]
+
+    for doctag_index in doctag_indexes:
+        for word in word_vocabs:
+            if word is None:
+                continue  # OOV word in the input sentence => skip
+            log_prob_sentence += score_sg_pair_doc(model, word, doctag_index)
+
+    log_prob_sentence /= len(doctag_indexes)
     return log_prob_sentence
 
 class TaggedDocument(namedtuple('TaggedDocument', 'words tags')):
@@ -978,12 +1023,24 @@ class Doc2Vec(Word2Vec):
                     break
                 ns = 0
                 for sentence_id, sentence in job:
+                    indexed_doctags = self.docvecs.indexed_doctags(sentence.tags)
+                    doctag_indexes, doctag_vectors, _, _ = indexed_doctags
+
                     if sentence_id >= total_documents:
                         break
                     if self.sg:
-                        score = score_document_sg(self, sentence, work)
+                        score = score_document_sg(self, sentence.words, doctag_indexes, work)
+                    elif self.dm_concat:
+                        if len(doctag_indexes) != len(sentence.tags):
+                            for s in sentence.tags:
+                                if s not in self.docvecs:
+                                    print("Error: didn't see {} in training.".format(s))
+                                    print("Giving up!")
+                                    score = np.nan
+                        else:
+                            score = score_document_dm_concat(self, sentence.words, doctag_indexes, work, neu1)
                     else:
-                        score = score_document_cbow(self, sentence, work, neu1)
+                        score = score_document_dm(self, sentence.words, doctag_indexes, work, neu1)
                     sentence_scores[sentence_id] = score
                     ns += 1
                 progress_queue.put(ns)  # report progress
