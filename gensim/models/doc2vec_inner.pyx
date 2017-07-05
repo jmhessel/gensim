@@ -677,7 +677,7 @@ def train_document_dm_concat(model, doc_words, doctag_indexes, alpha, work=None,
                     our_saxpy(&vector_size, &_doctag_locks[_doctag_indexes[m]], &_work[m * vector_size],
                               &ONE, &_doctag_vectors[_doctag_indexes[m] * vector_size], &ONE)
             if _learn_words:
-                for m in range(2 * window):
+                for m in range(window_multiplier * window):
                     our_saxpy(&vector_size, &_word_locks[window_indexes[m]], &_work[(doctag_len + m) * vector_size],
                               &ONE, &_word_vectors[window_indexes[m] * vector_size], &ONE)
 

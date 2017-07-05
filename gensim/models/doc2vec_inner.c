@@ -8348,7 +8348,7 @@ static PyObject *__pyx_pf_6gensim_6models_13doc2vec_inner_4train_document_dm_con
  *                     our_saxpy(&vector_size, &_doctag_locks[_doctag_indexes[m]], &_work[m * vector_size],
  *                               &ONE, &_doctag_vectors[_doctag_indexes[m] * vector_size], &ONE)
  *             if _learn_words:             # <<<<<<<<<<<<<<
- *                 for m in range(2 * window):
+ *                 for m in range(window_multiplier * window):
  *                     our_saxpy(&vector_size, &_word_locks[window_indexes[m]], &_work[(doctag_len + m) * vector_size],
  */
           __pyx_t_9 = (__pyx_v__learn_words != 0);
@@ -8357,17 +8357,17 @@ static PyObject *__pyx_pf_6gensim_6models_13doc2vec_inner_4train_document_dm_con
             /* "gensim/models/doc2vec_inner.pyx":680
  *                               &ONE, &_doctag_vectors[_doctag_indexes[m] * vector_size], &ONE)
  *             if _learn_words:
- *                 for m in range(2 * window):             # <<<<<<<<<<<<<<
+ *                 for m in range(window_multiplier * window):             # <<<<<<<<<<<<<<
  *                     our_saxpy(&vector_size, &_word_locks[window_indexes[m]], &_work[(doctag_len + m) * vector_size],
  *                               &ONE, &_word_vectors[window_indexes[m] * vector_size], &ONE)
  */
-            __pyx_t_6 = (2 * __pyx_v_window);
-            for (__pyx_t_16 = 0; __pyx_t_16 < __pyx_t_6; __pyx_t_16+=1) {
-              __pyx_v_m = __pyx_t_16;
+            __pyx_t_16 = (__pyx_v_window_multiplier * __pyx_v_window);
+            for (__pyx_t_17 = 0; __pyx_t_17 < __pyx_t_16; __pyx_t_17+=1) {
+              __pyx_v_m = __pyx_t_17;
 
               /* "gensim/models/doc2vec_inner.pyx":681
  *             if _learn_words:
- *                 for m in range(2 * window):
+ *                 for m in range(window_multiplier * window):
  *                     our_saxpy(&vector_size, &_word_locks[window_indexes[m]], &_work[(doctag_len + m) * vector_size],             # <<<<<<<<<<<<<<
  *                               &ONE, &_word_vectors[window_indexes[m] * vector_size], &ONE)
  * 
@@ -8379,7 +8379,7 @@ static PyObject *__pyx_pf_6gensim_6models_13doc2vec_inner_4train_document_dm_con
  *                     our_saxpy(&vector_size, &_doctag_locks[_doctag_indexes[m]], &_work[m * vector_size],
  *                               &ONE, &_doctag_vectors[_doctag_indexes[m] * vector_size], &ONE)
  *             if _learn_words:             # <<<<<<<<<<<<<<
- *                 for m in range(2 * window):
+ *                 for m in range(window_multiplier * window):
  *                     our_saxpy(&vector_size, &_word_locks[window_indexes[m]], &_work[(doctag_len + m) * vector_size],
  */
           }
