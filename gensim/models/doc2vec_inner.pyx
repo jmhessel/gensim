@@ -51,6 +51,23 @@ cdef REAL_t logaddexp(REAL_t x, REAL_t y) nogil:
     else:
         return x + y
 
+cdef void fast_document_dbow_hs_score(
+    const np.uint32_t *word_point, const np.uint8_t *word_code, const int codelen,
+    REAL_t *context_vectors, REAL_t *syn1, const int size,
+    const np.uint32_t context_index, REAL_t *work) nogil:
+
+    cdef long long a, b
+    cdef long long row1 = context_index * size, row2
+    cdef REAL_t f_dot, lprob
+    cdef int sgn
+
+    for b in range(codelen):
+        row2 = word_point[b] * size
+        f_dot = our_dot(&size, &context_vectors[row1], &ONE, &syn1[row2], &ONE)
+        sgn = (-1)**word_code[b] # ch function: 0-> 1, 1 -> -1
+        lprob = -1*sgn*f_dot
+        work[0] += -logaddexp(0,lprob)
+
 cdef void fast_document_dbow_hs(
     const np.uint32_t *word_point, const np.uint8_t *word_code, const int codelen,
     REAL_t *context_vectors, REAL_t *syn1, const int size,
@@ -696,6 +713,116 @@ def train_document_dm_concat(model, doc_words, doctag_indexes, alpha, work=None,
 
     return result
 
+def score_document_dm(model, doc_words, doctag_indexes, _work, _neu1):
+    cdef int hs = model.hs
+
+    cdef REAL_t *_word_vectors
+    cdef REAL_t *_doctag_vectors
+    cdef REAL_t *work
+    cdef REAL_t *neu1
+
+    cdef long long a, b
+    cdef long long row2
+    cdef REAL_t f, g, f_dot, lprob, count, inv_count
+    cdef int m, sgn
+
+    cdef int layer1_size = model.layer1_size
+    cdef int vector_size = model.vector_size
+    cdef int cbow_mean = model.cbow_mean
+
+    cdef int codelens[MAX_DOCUMENT_LEN]
+    cdef np.uint32_t indexes[MAX_DOCUMENT_LEN]
+    cdef np.uint32_t _doctag_indexes[MAX_DOCUMENT_LEN]
+    cdef np.uint32_t window_indexes[MAX_DOCUMENT_LEN]
+    cdef int document_len
+    cdef int doctag_len
+    cdef int window = model.window
+    cdef int expected_doctag_len = model.dm_tag_count
+    cdef int asymmetric_window = model.asymmetric_window
+    cdef int window_multiplier = model.window_multiplier
+
+    cdef int i, j, k, n
+    cdef long result = 0
+
+    # For hierarchical softmax
+    cdef REAL_t *syn1
+    cdef np.uint32_t *points[MAX_DOCUMENT_LEN]
+    cdef np.uint8_t *codes[MAX_DOCUMENT_LEN]
+
+    doctag_len = <int>min(MAX_DOCUMENT_LEN, len(doctag_indexes))
+    if doctag_len != expected_doctag_len:
+        return 0  # skip doc without expected number of tags
+
+    _word_vectors = <REAL_t *>(np.PyArray_DATA(model.wv.syn0))
+    _doctag_vectors = <REAL_t *>(np.PyArray_DATA(model.docvecs.doctag_syn0))
+
+    syn1 = <REAL_t *>(np.PyArray_DATA(model.syn1))
+
+    # convert Python structures to primitive types, so we can release the GIL
+    work = <REAL_t *>np.PyArray_DATA(_work)
+    neu1 = <REAL_t *>np.PyArray_DATA(_neu1)
+
+    vlookup = model.wv.vocab
+    i = 0
+    for token in doc_words:
+        predict_word = vlookup[token] if token in vlookup else None
+        if predict_word is None:  # shrink document to leave out word
+            continue  # leaving i unchanged
+
+        indexes[i] = predict_word.index
+
+        codelens[i] = <int>len(predict_word.code)
+        codes[i] = <np.uint8_t *>np.PyArray_DATA(predict_word.code)
+        points[i] = <np.uint32_t *>np.PyArray_DATA(predict_word.point)
+
+        result += 1
+        i += 1
+        if i == MAX_DOCUMENT_LEN:
+            break  # TODO: log warning, tally overflow?
+    document_len = i
+
+    for i in range(doctag_len):
+        _doctag_indexes[i] = doctag_indexes[i]
+        result += 1
+
+    # release GIL & train on the document
+    with nogil:
+        for i in range(document_len):
+            j = i - window
+            if j < 0:
+                j = 0
+            if asymmetric_window:
+                k = i
+            else:
+                k = i + window + 1
+            if k > document_len:
+                k = document_len
+
+            # compose l1 (in _neu1)
+            memset(neu1, 0, layer1_size * cython.sizeof(REAL_t))
+            count = <REAL_t>0.0
+            for m in range(j, k):
+                if m == i:
+                    continue
+                else:
+                    count += ONEF
+                    our_saxpy(&layer1_size, &ONEF, &_word_vectors[indexes[m] * layer1_size], &ONE, neu1, &ONE)
+            for m in range(doctag_len):
+                count += ONEF
+                our_saxpy(&layer1_size, &ONEF, &_doctag_vectors[_doctag_indexes[m] * layer1_size], &ONE, neu1, &ONE)
+            if count > (<REAL_t>0.5):
+                inv_count = ONEF/count
+            if cbow_mean:
+                sscal(&layer1_size, &inv_count, neu1, &ONE)  # (does this need BLAS-variants like saxpy?))
+
+            for b in range(codelens[i]):
+                row2 = points[i][b] * layer1_size
+                f_dot = our_dot(&layer1_size, neu1, &ONE, &syn1[row2], &ONE)
+                sgn = (-1)**codes[i][b]  # ch function: 0-> 1, 1 -> -1
+                lprob = -1*sgn*f_dot
+                work[0] += -logaddexp(0,lprob)
+
+    return work[0]
 
 def score_document_dm_concat(model, doc_words, doctag_indexes, _work, _neu1):
     cdef int hs = model.hs
@@ -778,7 +905,7 @@ def score_document_dm_concat(model, doc_words, doctag_indexes, _work, _neu1):
             else:
                 k = i + window + 1 # past document end OK: will pad with null word
 
-            # compose l1 & clear work
+            # compose l1
             for m in range(doctag_len):
                 # doc vector(s)
                 memcpy(&neu1[m * vector_size], &_doctag_vectors[_doctag_indexes[m] * vector_size],
@@ -807,6 +934,95 @@ def score_document_dm_concat(model, doc_words, doctag_indexes, _work, _neu1):
                 work[0] += -logaddexp(0,lprob)
 
     return work[0]
+
+
+def score_document_dbow(model, doc_words, doctag_indexes, _work):
+    cdef int hs = model.hs
+    cdef int negative = model.negative
+    cdef int sample = (model.sample != 0)
+    cdef int _train_words = model.dbow_words
+
+    cdef REAL_t *_word_vectors
+    cdef REAL_t *_doctag_vectors
+    cdef REAL_t *_word_locks
+    cdef REAL_t *_doctag_locks
+    cdef REAL_t *work
+    cdef int size = model.layer1_size
+
+    cdef int codelens[MAX_DOCUMENT_LEN]
+    cdef np.uint32_t indexes[MAX_DOCUMENT_LEN]
+    cdef np.uint32_t _doctag_indexes[MAX_DOCUMENT_LEN]
+    cdef np.uint32_t reduced_windows[MAX_DOCUMENT_LEN]
+    cdef int document_len
+    cdef int doctag_len
+    cdef int window = model.window
+    cdef int asymmetric_window = model.asymmetric_window
+
+    cdef int i, j
+    cdef unsigned long long r
+    cdef long result = 0
+
+    # For hierarchical softmax
+    cdef REAL_t *syn1
+    cdef np.uint32_t *points[MAX_DOCUMENT_LEN]
+    cdef np.uint8_t *codes[MAX_DOCUMENT_LEN]
+
+    _word_vectors = <REAL_t *>(np.PyArray_DATA(model.wv.syn0))
+    _doctag_vectors = <REAL_t *>(np.PyArray_DATA(model.docvecs.doctag_syn0))
+
+    syn1 = <REAL_t *>(np.PyArray_DATA(model.syn1))
+    work = <REAL_t *>np.PyArray_DATA(_work)
+
+    vlookup = model.wv.vocab
+    i = 0
+    for token in doc_words:
+        predict_word = vlookup[token] if token in vlookup else None
+        if predict_word is None:  # shrink document to leave out word
+            continue  # leaving i unchanged
+
+        indexes[i] = predict_word.index
+        codelens[i] = <int>len(predict_word.code)
+        codes[i] = <np.uint8_t *>np.PyArray_DATA(predict_word.code)
+        points[i] = <np.uint32_t *>np.PyArray_DATA(predict_word.point)
+        result += 1
+        i += 1
+        if i == MAX_DOCUMENT_LEN:
+            break  # TODO: log warning, tally overflow?
+    document_len = i
+
+    doctag_len = <int>min(MAX_DOCUMENT_LEN, len(doctag_indexes))
+    for i in range(doctag_len):
+        _doctag_indexes[i] = doctag_indexes[i]
+        result += 1
+
+    # release GIL & train on the document
+    with nogil:
+        for i in range(document_len):
+            if _train_words:  # simultaneous skip-gram wordvec-training
+                j = i - window
+                if j < 0:
+                    j = 0
+                if asymmetric_window:
+                    k = i
+                else:
+                    k = i + window + 1
+                if k > document_len:
+                    k = document_len
+                for j in range(j, k):
+                    if j == i:
+                        continue
+
+                    fast_document_dbow_hs_score(points[i], codes[i], codelens[i], _word_vectors, syn1, size, indexes[j],
+                                                work)
+
+
+            # docvec-training
+            for j in range(doctag_len):
+                fast_document_dbow_hs_score(points[i], codes[i], codelens[i], _doctag_vectors, syn1, size, _doctag_indexes[j],
+                                            work)
+
+    return work[0]
+
 
 def init():
     """

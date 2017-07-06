@@ -62,7 +62,7 @@ from numpy import zeros, sum as np_sum, add as np_add, concatenate, \
 
 from gensim.utils import call_on_class_only
 from gensim import utils, matutils  # utility fnc for pickling, common scipy operations etc
-from gensim.models.word2vec import Word2Vec, train_cbow_pair, train_sg_pair, train_batch_sg, score_cbow_pair, score_sg_pair
+from gensim.models.word2vec import Word2Vec, train_cbow_pair, train_sg_pair, train_batch_sg, score_cbow_pair, score_sg_pair, score_sentence_sg
 from gensim.models.keyedvectors import KeyedVectors
 from six.moves import xrange, zip
 from six import string_types, integer_types
@@ -70,10 +70,13 @@ from six import string_types, integer_types
 logger = logging.getLogger(__name__)
 
 try:
-    from gensim.models.doc2vec_inner import train_document_dbow, train_document_dm, train_document_dm_concat, score_document_dm_concat
+    from gensim.models.doc2vec_inner import train_document_dbow, train_document_dm, train_document_dm_concat
+    from gensim.models.doc2vec_inner import score_document_dm_concat, score_document_dm, score_document_dbow
     from gensim.models.word2vec_inner import FAST_VERSION  # blas-adaptation shared from word2vec
     logger.debug('Fast version of {0} is being used'.format(__name__))
 except ImportError:
+    #print("FAILED")
+    #quit()
     logger.warning('Slow version of {0} is being used'.format(__name__))
     # failed... fall back to plain numpy (20-80x slower training than the above)
     FAST_VERSION = -1
@@ -296,71 +299,73 @@ except ImportError:
         return log_prob_sentence
 
 
-def score_document_dm(model, doc_words, doctag_indexes, work=None, neu1=None):
-    """
-    Obtain likelihood score for a single document in a fitted CBOW representaion.
+    def score_document_dm(model, doc_words, doctag_indexes, work=None, neu1=None):
+        """
+        Obtain likelihood score for a single document in a fitted CBOW representaion.
 
-    This is the non-optimized, Python version. If you have cython installed, gensim
-    will use the optimized version from word2vec_inner instead.
+        This is the non-optimized, Python version. If you have cython installed, gensim
+        will use the optimized version from word2vec_inner instead.
 
-    """
-    log_prob_sentence = 0.0
-    if model.negative:
-        raise RuntimeError("scoring is only available for HS=True")
+        """
+        log_prob_sentence = 0.0
+        if model.negative:
+            raise RuntimeError("scoring is only available for HS=True")
 
-    doctag_vectors = model.docvecs.doctag_syn0
-    doctag_len = len(doctag_indexes)
+        doctag_vectors = model.docvecs.doctag_syn0
+        doctag_len = len(doctag_indexes)
 
-    word_vocabs = [model.wv.vocab[w] for w in doc_words if w in model.wv.vocab]
-    for pos, word in enumerate(word_vocabs):
-        if word is None:
-            continue  # OOV word in the input sentence => skip
-
-        start = max(0, pos - model.window)
-        end = (pos + model.window + 1) if not model.asymmetric_window else pos
-        window_pos = enumerate(word_vocabs[start:end], start)
-        word2_indices = [word2.index for pos2, word2 in window_pos if (word2 is not None and pos2 != pos)]
-
-        l1 = np_sum(model.wv.syn0[word2_indices], axis=0) + np_sum(doctag_vectors[doctag_indexes], axis=0)
-        count = len(word2_indices) + len(doctag_indexes)
-        if model.cbow_mean and count > 1 :
-            l1 /= count
-        log_prob_sentence += score_cbow_pair(model, word, l1)
-    return log_prob_sentence
-
-def score_sg_pair_doc(model, word, doc_i):
-    l1 = model.docvecs.doctag_syn0[doc_i]
-    l2a = deepcopy(model.syn1[word.point])  # 2d matrix, codelen x layer1_size
-    sgn = (-1.0)**word.code  # ch function, 0-> 1, 1 -> -1
-    lprob = -logaddexp(0, -sgn * dot(l1, l2a.T))
-    return sum(lprob)
-
-def score_document_sg(model, doc_words, doctag_indexes, document, work=None):
-    """
-    Obtain likelihood score for a single document in a fitted skip-gram representaion.
-    This corresponds to the DBOW model.
-
-    This is the non-optimized, Python version. If you have cython installed, gensim
-    will use the optimized version from word2vec_inner instead.
-
-    """
-    log_prob_sentence = 0.0
-    if model.negative:
-        raise RuntimeError("scoring is only available for HS=True")
-
-    doctag_vectors = model.docvecs.doctag_syn0
-    doctag_len = len(doctag_indexes)
-
-    word_vocabs = [model.wv.vocab[w] for w in doc_words if w in model.wv.vocab]
-
-    for doctag_index in doctag_indexes:
-        for word in word_vocabs:
+        word_vocabs = [model.wv.vocab[w] for w in doc_words if w in model.wv.vocab]
+        for pos, word in enumerate(word_vocabs):
             if word is None:
                 continue  # OOV word in the input sentence => skip
-            log_prob_sentence += score_sg_pair_doc(model, word, doctag_index)
 
-    log_prob_sentence /= len(doctag_indexes)
-    return log_prob_sentence
+            start = max(0, pos - model.window)
+            end = (pos + model.window + 1) if not model.asymmetric_window else pos
+            window_pos = enumerate(word_vocabs[start:end], start)
+            word2_indices = [word2.index for pos2, word2 in window_pos if (word2 is not None and pos2 != pos)]
+
+            l1 = np_sum(model.wv.syn0[word2_indices], axis=0) + np_sum(doctag_vectors[doctag_indexes], axis=0)
+            count = len(word2_indices) + len(doctag_indexes)
+            if model.cbow_mean and count > 1 :
+                l1 /= count
+            log_prob_sentence += score_cbow_pair(model, word, l1)
+        return log_prob_sentence
+
+    def score_sg_pair_doc(model, word, doc_i):
+        l1 = model.docvecs.doctag_syn0[doc_i]
+        l2a = deepcopy(model.syn1[word.point])  # 2d matrix, codelen x layer1_size
+        sgn = (-1.0)**word.code  # ch function, 0-> 1, 1 -> -1
+        lprob = -logaddexp(0, -sgn * dot(l1, l2a.T))
+        return sum(lprob)
+
+    def score_document_dbow(model, doc_words, doctag_indexes, document, work=None):
+        """
+        Obtain likelihood score for a single document in a fitted skip-gram representaion.
+        This corresponds to the DBOW model.
+
+        This is the non-optimized, Python version. If you have cython installed, gensim
+        will use the optimized version from word2vec_inner instead.
+
+        """
+        log_prob_sentence = 0.0
+        if model.negative:
+            raise RuntimeError("scoring is only available for HS=True")
+
+        word_vocabs = [model.wv.vocab[w] for w in doc_words if w in model.wv.vocab]
+
+        doctag_vectors = model.docvecs.doctag_syn0
+        doctag_len = len(doctag_indexes)
+
+        if model.dbow_words:
+            log_prob_sentence += score_sentence_sg(model, [doc_words], alpha, work)
+
+        for doctag_index in doctag_indexes:
+            for word in word_vocabs:
+                if word is None:
+                    continue  # OOV word in the input sentence => skip
+                log_prob_sentence += score_sg_pair_doc(model, word, doctag_index)
+
+        return log_prob_sentence
 
 class TaggedDocument(namedtuple('TaggedDocument', 'words tags')):
     """
@@ -1028,7 +1033,7 @@ class Doc2Vec(Word2Vec):
                     if sentence_id >= total_documents:
                         break
                     if self.sg:
-                        score = score_document_sg(self, sentence.words, doctag_indexes, work)
+                        score = score_document_dbow(self, sentence.words, doctag_indexes, work)
                     elif self.dm_concat:
                         if len(doctag_indexes) != len(sentence.tags):
                             for s in sentence.tags:
