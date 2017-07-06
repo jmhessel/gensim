@@ -250,50 +250,50 @@ except ImportError:
 
         return len(padded_document_indexes) - pre_pad_count - post_pad_count
 
-def score_document_dm_concat_np(model, doc_words, doctag_indexes, work=None, neu1=None):
-    """
-    Obtain likelihood score for a single document in a fitted DBOW representaion.
+    def score_document_dm_concat(model, doc_words, doctag_indexes, work=None, neu1=None):
+        """
+        Obtain likelihood score for a single document in a fitted DBOW representaion.
 
-    This is the non-optimized, Python version. If you have cython installed, gensim
-    will use the optimized version from word2vec_inner instead.
+        This is the non-optimized, Python version. If you have cython installed, gensim
+        will use the optimized version from word2vec_inner instead.
 
-    """
-    log_prob_sentence = 0.0
-    if model.negative:
-        raise RuntimeError("scoring is only available for HS=True")
+        """
+        log_prob_sentence = 0.0
+        if model.negative:
+            raise RuntimeError("scoring is only available for HS=True")
 
-    doctag_vectors = model.docvecs.doctag_syn0
-    word_vectors = model.wv.syn0
+        doctag_vectors = model.docvecs.doctag_syn0
+        word_vectors = model.wv.syn0
 
-    doctag_len = len(doctag_indexes)
+        doctag_len = len(doctag_indexes)
 
-    word_vocabs = [model.wv.vocab[w] for w in doc_words if w in model.wv.vocab]
+        word_vocabs = [model.wv.vocab[w] for w in doc_words if w in model.wv.vocab]
 
-    null_word = model.wv.vocab['\0']
-    pre_pad_count = model.window
-    post_pad_count = model.window
-    padded_document_indexes = (
-        (pre_pad_count * [null_word.index])  # pre-padding
-        + [word.index for word in word_vocabs if word is not None]  # elide out-of-Vocabulary words
-        + (post_pad_count * [null_word.index])  # post-padding
-    )
+        null_word = model.wv.vocab['\0']
+        pre_pad_count = model.window
+        post_pad_count = model.window
+        padded_document_indexes = (
+            (pre_pad_count * [null_word.index])  # pre-padding
+            + [word.index for word in word_vocabs if word is not None]  # elide out-of-Vocabulary words
+            + (post_pad_count * [null_word.index])  # post-padding
+        )
 
-    for pos in range(pre_pad_count, len(padded_document_indexes) - post_pad_count):
-        if model.asymmetric_window:
-            word_context_indexes = (
-                padded_document_indexes[(pos - pre_pad_count): pos]  # preceding words
-            )
-        else:
-            word_context_indexes = (
-                padded_document_indexes[(pos - pre_pad_count): pos]  # preceding words
-                + padded_document_indexes[(pos + 1):(pos + 1 + post_pad_count)]  # following words
-            )
+        for pos in range(pre_pad_count, len(padded_document_indexes) - post_pad_count):
+            if model.asymmetric_window:
+                word_context_indexes = (
+                    padded_document_indexes[(pos - pre_pad_count): pos]  # preceding words
+                )
+            else:
+                word_context_indexes = (
+                    padded_document_indexes[(pos - pre_pad_count): pos]  # preceding words
+                    + padded_document_indexes[(pos + 1):(pos + 1 + post_pad_count)]  # following words
+                )
 
-        word_context_len = len(word_context_indexes)
-        predict_word = model.wv.vocab[model.wv.index2word[padded_document_indexes[pos]]]
-        l1 = concatenate((doctag_vectors[doctag_indexes], word_vectors[word_context_indexes])).ravel()
-        log_prob_sentence += score_cbow_pair(model, predict_word, l1)
-    return log_prob_sentence
+            word_context_len = len(word_context_indexes)
+            predict_word = model.wv.vocab[model.wv.index2word[padded_document_indexes[pos]]]
+            l1 = concatenate((doctag_vectors[doctag_indexes], word_vectors[word_context_indexes])).ravel()
+            log_prob_sentence += score_cbow_pair(model, predict_word, l1)
+        return log_prob_sentence
 
 
 def score_document_dm(model, doc_words, doctag_indexes, work=None, neu1=None):
@@ -1037,11 +1037,7 @@ class Doc2Vec(Word2Vec):
                                     print("Giving up!")
                                     score = np.nan
                         else:
-                            score1 = score_document_dm_concat(self, sentence.words, doctag_indexes, work, neu1)
-                            print("MUH LINE BREAK")
-                            score2 = score_document_dm_concat_np(self, sentence.words, doctag_indexes, work, neu1)
-                            print(score1, score2)
-                            score = score1
+                            score = score_document_dm_concat(self, sentence.words, doctag_indexes, work, neu1)
                     else:
                         score = score_document_dm(self, sentence.words, doctag_indexes, work, neu1)
                     sentence_scores[sentence_id] = score
