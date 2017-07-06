@@ -11,8 +11,8 @@ import cython
 import numpy as np
 cimport numpy as np
 
-from libc.math cimport exp
-from libc.math cimport log
+from libc.math cimport exp, log, log1p
+
 from libc.string cimport memset
 
 # scipy <= 0.15
@@ -65,6 +65,16 @@ cdef void our_saxpy_noblas(const int *N, const float *alpha, const float *X, con
     cdef int i
     for i from 0 <= i < N[0] by 1:
         Y[i * (incY[0])] = (alpha[0]) * X[i * (incX[0])] + Y[i * (incY[0])]
+
+cdef REAL_t logaddexp(REAL_t x, REAL_t y) nogil:
+    cdef REAL_t tmp
+    tmp = x - y
+    if tmp > 0:
+        return x + log1p(exp(-tmp))
+    elif tmp <= 0:
+        return y + log1p(exp(tmp))
+    else:
+        return x + y
 
 
 cdef void fast_sentence_sg_hs(
@@ -582,17 +592,14 @@ cdef void score_pair_sg_hs(
 
     cdef long long b
     cdef long long row1 = word2_index * size, row2, sgn
-    cdef REAL_t f
+    cdef REAL_t f_dot, lprob
 
     for b in range(codelen):
         row2 = word_point[b] * size
-        f = our_dot(&size, &syn0[row1], &ONE, &syn1[row2], &ONE)
+        f_dot = our_dot(&size, &syn0[row1], &ONE, &syn1[row2], &ONE)
         sgn = (-1)**word_code[b] # ch function: 0-> 1, 1 -> -1
-        f = sgn*f
-        if f <= -MAX_EXP or f >= MAX_EXP:
-            continue
-        f = LOG_TABLE[<int>((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]
-        work[0] += f
+        lprob = -1*sgn*f_dot
+        work[0] += -logaddexp(0,lprob)
 
 def score_sentence_cbow(model, sentence, _work, _neu1):
 
@@ -667,6 +674,7 @@ cdef void score_pair_cbow_hs(
     cdef long long a, b
     cdef long long row2
     cdef REAL_t f, g, count, inv_count, sgn
+    cdef REAL_t f_dot, lprob
     cdef int m
 
     memset(neu1, 0, size * cython.sizeof(REAL_t))
@@ -684,14 +692,10 @@ cdef void score_pair_cbow_hs(
 
     for b in range(codelens[i]):
         row2 = word_point[b] * size
-        f = our_dot(&size, neu1, &ONE, &syn1[row2], &ONE)
-        sgn = (-1)**word_code[b] # ch function: 0-> 1, 1 -> -1
-        f = sgn*f
-        if f <= -MAX_EXP or f >= MAX_EXP:
-            continue
-        f = LOG_TABLE[<int>((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]
-        work[0] += f
-
+        f_dot = our_dot(&size, neu1, &ONE, &syn1[row2], &ONE)
+        sgn = (-1)**word_code[b]  # ch function: 0-> 1, 1 -> -1
+        lprob = -1*sgn*f_dot
+        work[0] += -logaddexp(0,lprob)
 
 def init():
     """

@@ -12,9 +12,7 @@ import numpy as np
 from numpy import zeros, float32 as REAL
 cimport numpy as np
 
-from libc.math cimport exp
-from libc.math cimport log
-from libc.math cimport log1p
+from libc.math cimport exp, log, log1p
 from libc.string cimport memset, memcpy
 
 # scipy <= 0.15
@@ -709,8 +707,8 @@ def score_document_dm_concat(model, doc_words, doctag_indexes, _work, _neu1):
 
     cdef long long a, b
     cdef long long row2
-    cdef REAL_t f, g
-    cdef int m
+    cdef REAL_t f, g, f_dot, lprob
+    cdef int m, sgn
 
     cdef int layer1_size = model.layer1_size
     cdef int vector_size = model.vector_size
@@ -772,8 +770,7 @@ def score_document_dm_concat(model, doc_words, doctag_indexes, _work, _neu1):
         result += 1
 
     # release GIL & train on the document
-    #with nogil:
-    with open("X.txt", 'w') as my_f:
+    with nogil:
         for i in range(document_len):
             j = i - window      # negative OK: will pad with null word
             if asymmetric_window:
@@ -802,14 +799,9 @@ def score_document_dm_concat(model, doc_words, doctag_indexes, _work, _neu1):
                 memcpy(&neu1[(doctag_len + m) * vector_size], &_word_vectors[window_indexes[m] * vector_size],
                        vector_size * cython.sizeof(REAL_t))
 
-            log_add_exp_input = []
             for b in range(codelens[i]):
                 row2 = points[i][b] * layer1_size
                 f_dot = our_dot(&layer1_size, neu1, &ONE, &syn1[row2], &ONE)
-                if f_dot <= -MAX_EXP or f_dot >= MAX_EXP:
-                    continue
-                f = EXP_TABLE[<int>((f_dot + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]
-
                 sgn = (-1)**codes[i][b]  # ch function: 0-> 1, 1 -> -1
                 lprob = -1*sgn*f_dot
                 work[0] += -logaddexp(0,lprob)

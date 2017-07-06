@@ -158,7 +158,7 @@ except ImportError:
 
                 # now go over all words from the (reduced) window, predicting each one in turn
                 start = max(0, pos - model.window + reduced_window)
-                end = (pos + model.window + 1 - reduced_window) if not self.asymmetric_window else pos
+                end = (pos + model.window + 1 - reduced_window) if not model.asymmetric_window else pos
                 for pos2, word2 in enumerate(word_vocabs[start:end], start):
                     # don't train on the `word` itself
                     if pos2 != pos:
@@ -185,7 +185,7 @@ except ImportError:
             for pos, word in enumerate(word_vocabs):
                 reduced_window = model.random.randint(model.window)  # `b` in the original word2vec code
                 start = max(0, pos - model.window + reduced_window)
-                end = (pos + model.window + 1 - reduced_window) if not self.asymmetric_window else pos
+                end = (pos + model.window + 1 - reduced_window) if not model.asymmetric_window else pos
                 window_pos = enumerate(word_vocabs[start:end], start)
                 word2_indices = [word2.index for pos2, word2 in window_pos if (word2 is not None and pos2 != pos)]
                 l1 = np_sum(model.wv.syn0[word2_indices], axis=0)  # 1 x vector_size
@@ -217,7 +217,7 @@ except ImportError:
 
             # now go over all words from the window, predicting each one in turn
             start = max(0, pos - model.window)
-            end = (pos + model.window + 1 - reduced_window) if not self.asymmetric_window else pos
+            end = (pos + model.window + 1) if not model.asymmetric_window else pos
             for pos2, word2 in enumerate(word_vocabs[start : end], start):
                 # don't train on OOV words and on the `word` itself
                 if word2 is not None and pos2 != pos:
@@ -246,7 +246,7 @@ except ImportError:
                 continue  # OOV word in the input sentence => skip
 
             start = max(0, pos - model.window)
-            end = (pos + model.window + 1) if not self.asymmetric_window else pos
+            end = (pos + model.window + 1) if not model.asymmetric_window else pos
             window_pos = enumerate(word_vocabs[start:end], start)
             word2_indices = [word2.index for pos2, word2 in window_pos if (word2 is not None and pos2 != pos)]
             l1 = np_sum(model.wv.syn0[word2_indices], axis=0)  # 1 x layer1_size
