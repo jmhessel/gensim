@@ -14,6 +14,7 @@ cimport numpy as np
 
 from libc.math cimport exp
 from libc.math cimport log
+from libc.math cimport log1p
 from libc.string cimport memset, memcpy
 
 # scipy <= 0.15
@@ -41,6 +42,16 @@ DEF MAX_EXP = 6
 
 cdef REAL_t[EXP_TABLE_SIZE] EXP_TABLE
 cdef REAL_t[EXP_TABLE_SIZE] LOG_TABLE
+
+cdef REAL_t logaddexp(REAL_t x, REAL_t y) nogil:
+    cdef REAL_t tmp
+    tmp = x - y
+    if tmp > 0:
+        return x + log1p(exp(-tmp))
+    elif tmp <= 0:
+        return y + log1p(exp(tmp))
+    else:
+        return x + y
 
 cdef void fast_document_dbow_hs(
     const np.uint32_t *word_point, const np.uint8_t *word_code, const int codelen,
@@ -688,37 +699,50 @@ def train_document_dm_concat(model, doc_words, doctag_indexes, alpha, work=None,
     return result
 
 
-def score_document_cbow(model, doc_words, doctag_indexes, _work, _neu1):
-    # This is a work-in-progress. I am not sure why this returns drastically
-    # different results than then numpy one. Need to check it out.
+def score_document_dm_concat(model, doc_words, doctag_indexes, _work, _neu1):
+    cdef int hs = model.hs
 
-    cdef int cbow_mean = model.cbow_mean
-
-    cdef REAL_t *syn0 = <REAL_t *>(np.PyArray_DATA(model.wv.syn0))
+    cdef REAL_t *_word_vectors
+    cdef REAL_t *_doctag_vectors
     cdef REAL_t *work
     cdef REAL_t *neu1
-    cdef REAL_t *_doctag_vectors
-    cdef int size = model.layer1_size
+
+    cdef long long a, b
+    cdef long long row2
+    cdef REAL_t f, g
+    cdef int m
+
+    cdef int layer1_size = model.layer1_size
+    cdef int vector_size = model.vector_size
 
     cdef int codelens[MAX_DOCUMENT_LEN]
     cdef np.uint32_t indexes[MAX_DOCUMENT_LEN]
     cdef np.uint32_t _doctag_indexes[MAX_DOCUMENT_LEN]
-
-    cdef int sentence_len
-    cdef int window = model.window
-    cdef int asymmetric_window = model.asymmetric_window
+    cdef np.uint32_t window_indexes[MAX_DOCUMENT_LEN]
+    cdef int document_len
     cdef int doctag_len
+    cdef int window = model.window
+    cdef int expected_doctag_len = model.dm_tag_count
+    cdef int asymmetric_window = model.asymmetric_window
+    cdef int window_multiplier = model.window_multiplier
 
-    cdef int i, j, k
+    cdef int i, j, k, n
     cdef long result = 0
+    cdef int null_word_index = model.wv.vocab['\0'].index
 
     # For hierarchical softmax
     cdef REAL_t *syn1
     cdef np.uint32_t *points[MAX_DOCUMENT_LEN]
     cdef np.uint8_t *codes[MAX_DOCUMENT_LEN]
 
-    syn1 = <REAL_t *>(np.PyArray_DATA(model.syn1))
+    doctag_len = <int>min(MAX_DOCUMENT_LEN, len(doctag_indexes))
+    if doctag_len != expected_doctag_len:
+        return 0  # skip doc without expected number of tags
+
+    _word_vectors = <REAL_t *>(np.PyArray_DATA(model.wv.syn0))
     _doctag_vectors = <REAL_t *>(np.PyArray_DATA(model.docvecs.doctag_syn0))
+
+    syn1 = <REAL_t *>(np.PyArray_DATA(model.syn1))
 
     # convert Python structures to primitive types, so we can release the GIL
     work = <REAL_t *>np.PyArray_DATA(_work)
@@ -727,78 +751,70 @@ def score_document_cbow(model, doc_words, doctag_indexes, _work, _neu1):
     vlookup = model.wv.vocab
     i = 0
     for token in doc_words:
-        word = vlookup[token] if token in vlookup else None
-        if word is None:
-            continue  # for score, should this be a default negative value?
-        indexes[i] = word.index
-        codelens[i] = <int>len(word.code)
-        codes[i] = <np.uint8_t *>np.PyArray_DATA(word.code)
-        points[i] = <np.uint32_t *>np.PyArray_DATA(word.point)
+        predict_word = vlookup[token] if token in vlookup else None
+        if predict_word is None:  # shrink document to leave out word
+            continue  # leaving i unchanged
+
+        indexes[i] = predict_word.index
+
+        codelens[i] = <int>len(predict_word.code)
+        codes[i] = <np.uint8_t *>np.PyArray_DATA(predict_word.code)
+        points[i] = <np.uint32_t *>np.PyArray_DATA(predict_word.point)
+
         result += 1
         i += 1
         if i == MAX_DOCUMENT_LEN:
             break  # TODO: log warning, tally overflow?
-    sentence_len = i
+    document_len = i
 
-    doctag_len = <int>min(MAX_DOCUMENT_LEN, len(doctag_indexes))
+    for i in range(doctag_len):
+        _doctag_indexes[i] = doctag_indexes[i]
+        result += 1
 
-    # release GIL & train on the sentence
-    work[0] = 0.0
-    with nogil:
-        for i in range(sentence_len):
-            if codelens[i] == 0:
-                continue
-            j = i - window
-            if j < 0:
-                j = 0
+    # release GIL & train on the document
+    #with nogil:
+    with open("X.txt", 'w') as my_f:
+        for i in range(document_len):
+            j = i - window      # negative OK: will pad with null word
             if asymmetric_window:
                 k = i
             else:
-                k = i + window + 1
-            if k > sentence_len:
-                k = sentence_len
-            score_pair_cbow_hs(points[i], codes[i], codelens, neu1, syn0, syn1, _doctag_vectors, _doctag_indexes, doctag_len, size, indexes, work, i, j, k, cbow_mean)
+                k = i + window + 1 # past document end OK: will pad with null word
+
+            # compose l1 & clear work
+            for m in range(doctag_len):
+                # doc vector(s)
+                memcpy(&neu1[m * vector_size], &_doctag_vectors[_doctag_indexes[m] * vector_size],
+                       vector_size * cython.sizeof(REAL_t))
+
+            n = 0
+            for m in range(j, k):
+                # word vectors in window
+                if m == i:
+                    continue
+                if m < 0 or m >= document_len:
+                    window_indexes[n] = null_word_index
+                else:
+                    window_indexes[n] = indexes[m]
+                n = n + 1
+
+            for m in range(window_multiplier * window):
+                memcpy(&neu1[(doctag_len + m) * vector_size], &_word_vectors[window_indexes[m] * vector_size],
+                       vector_size * cython.sizeof(REAL_t))
+
+            log_add_exp_input = []
+            for b in range(codelens[i]):
+                row2 = points[i][b] * layer1_size
+                f_dot = our_dot(&layer1_size, neu1, &ONE, &syn1[row2], &ONE)
+                if f_dot <= -MAX_EXP or f_dot >= MAX_EXP:
+                    continue
+                f = EXP_TABLE[<int>((f_dot + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]
+
+                sgn = (-1)**codes[i][b]  # ch function: 0-> 1, 1 -> -1
+                lprob = -1*sgn*f_dot
+                work[0] += -logaddexp(0,lprob)
 
     return work[0]
-
-cdef void score_pair_cbow_hs(
-    const np.uint32_t *word_point, const np.uint8_t *word_code, int codelens[MAX_DOCUMENT_LEN],
-    REAL_t *neu1, REAL_t *syn0, REAL_t *syn1, REAL_t *doctag_vectors, np.uint32_t doctag_indexes[MAX_DOCUMENT_LEN], int doctag_len, const int size,
-    const np.uint32_t indexes[MAX_DOCUMENT_LEN], REAL_t *work,
-    int i, int j, int k, int cbow_mean) nogil:
-
-    cdef long long a, b
-    cdef long long row2
-    cdef REAL_t f, g, count, inv_count, sgn
-    cdef int m
-
-    memset(neu1, 0, size * cython.sizeof(REAL_t))
-    count = <REAL_t>0.0
-    for m in range(j, k):
-        if m == i or codelens[m] == 0:
-            continue
-        else:
-            count += ONEF
-            our_saxpy(&size, &ONEF, &syn0[indexes[m] * size], &ONE, neu1, &ONE)
-
-        for m in range(doctag_len):
-            count += ONEF
-            our_saxpy(&size, &ONEF, &doctag_vectors[doctag_indexes[m] * size], &ONE, neu1, &ONE)
-
-    if count > (<REAL_t>0.5):
-        inv_count = ONEF/count
-    if cbow_mean:
-        sscal(&size, &inv_count, neu1, &ONE)
-
-    for b in range(codelens[i]):
-        row2 = word_point[b] * size
-        f = our_dot(&size, neu1, &ONE, &syn1[row2], &ONE)
-        sgn = (-1)**word_code[b] # ch function: 0-> 1, 1 -> -1
-        f = sgn*f
-        if f <= -MAX_EXP or f >= MAX_EXP:
-            continue
-        f = LOG_TABLE[<int>((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]
-        work[0] += f
 
 def init():
     """

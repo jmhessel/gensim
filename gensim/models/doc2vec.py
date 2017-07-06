@@ -70,7 +70,7 @@ from six import string_types, integer_types
 logger = logging.getLogger(__name__)
 
 try:
-    from gensim.models.doc2vec_inner import train_document_dbow, train_document_dm, train_document_dm_concat
+    from gensim.models.doc2vec_inner import train_document_dbow, train_document_dm, train_document_dm_concat, score_document_dm_concat
     from gensim.models.word2vec_inner import FAST_VERSION  # blas-adaptation shared from word2vec
     logger.debug('Fast version of {0} is being used'.format(__name__))
 except ImportError:
@@ -250,7 +250,7 @@ except ImportError:
 
         return len(padded_document_indexes) - pre_pad_count - post_pad_count
 
-def score_document_dm_concat(model, doc_words, doctag_indexes, work=None, neu1=None):
+def score_document_dm_concat_np(model, doc_words, doctag_indexes, work=None, neu1=None):
     """
     Obtain likelihood score for a single document in a fitted DBOW representaion.
 
@@ -292,7 +292,6 @@ def score_document_dm_concat(model, doc_words, doctag_indexes, work=None, neu1=N
         word_context_len = len(word_context_indexes)
         predict_word = model.wv.vocab[model.wv.index2word[padded_document_indexes[pos]]]
         l1 = concatenate((doctag_vectors[doctag_indexes], word_vectors[word_context_indexes])).ravel()
-
         log_prob_sentence += score_cbow_pair(model, predict_word, l1)
     return log_prob_sentence
 
@@ -1015,14 +1014,14 @@ class Doc2Vec(Word2Vec):
 
         def worker_loop():
             """Compute log probability for each sentence, lifting lists of sentences from the jobs queue."""
-            work = zeros(1, dtype=REAL)  # for sg hs, we actually only need one memory loc (running sum)
-            neu1 = matutils.zeros_aligned(self.layer1_size, dtype=REAL)
             while True:
                 job = job_queue.get()
                 if job is None:  # signal to finish
                     break
                 ns = 0
                 for sentence_id, sentence in job:
+                    work = zeros(1, dtype=REAL)  # for sg hs, we actually only need one memory loc (running sum)
+                    neu1 = matutils.zeros_aligned(self.layer1_size, dtype=REAL)
                     indexed_doctags = self.docvecs.indexed_doctags(sentence.tags)
                     doctag_indexes, doctag_vectors, _, _ = indexed_doctags
 
@@ -1038,7 +1037,11 @@ class Doc2Vec(Word2Vec):
                                     print("Giving up!")
                                     score = np.nan
                         else:
-                            score = score_document_dm_concat(self, sentence.words, doctag_indexes, work, neu1)
+                            score1 = score_document_dm_concat(self, sentence.words, doctag_indexes, work, neu1)
+                            print("MUH LINE BREAK")
+                            score2 = score_document_dm_concat_np(self, sentence.words, doctag_indexes, work, neu1)
+                            print(score1, score2)
+                            score = score1
                     else:
                         score = score_document_dm(self, sentence.words, doctag_indexes, work, neu1)
                     sentence_scores[sentence_id] = score
