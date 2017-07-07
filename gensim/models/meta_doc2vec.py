@@ -446,15 +446,9 @@ class MetaDoc2Vec(Doc2Vec):
                                     print("Giving up!")
                                     score = np.nan
                         else:
-                            score_np = score_meta_document_dm_concat_np(self, sentence.words, doctag_indexes, doc_features, work, neu1)
-                            score_cy = score_meta_document_dm_concat(self, sentence.words, doctag_indexes, doc_features, work, neu1)
-                            print(score_np, score_cy)
-                            score = score_cy
+                            score = score_meta_document_dm_concat(self, sentence.words, doctag_indexes, doc_features, work, neu1)
                     else:
-                        score_np = score_meta_document_dm_np(self, sentence.words, doctag_indexes, doc_features, work, neu1)
-                        score_cy = score_meta_document_dm(self, sentence.words, doctag_indexes, doc_features, work, neu1)
-                        print(score_np, score_cy)
-                        score = score_cy
+                        score = score_meta_document_dm(self, sentence.words, doctag_indexes, doc_features, work, neu1)
                     sentence_scores[sentence_id] = score
                     ns += 1
                 progress_queue.put(ns)  # report progress
