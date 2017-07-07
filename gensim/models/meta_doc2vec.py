@@ -11,12 +11,13 @@ Paragarph vector with meta-features
 
 import logging
 import os
+import threading
 import warnings
 
 try:
-    from queue import Queue
+    from queue import Queue, Empty
 except ImportError:
-    from Queue import Queue
+    from Queue import Queue, Empty
 
 from collections import namedtuple, defaultdict
 from timeit import default_timer
@@ -28,7 +29,7 @@ from numpy import zeros, sum as np_sum, add as np_add, concatenate, \
 
 from gensim.utils import call_on_class_only
 from gensim import utils, matutils  # utility fnc for pickling, common scipy operations etc
-from gensim.models.word2vec import Word2Vec, train_cbow_pair, train_sg_pair, train_batch_sg
+from gensim.models.word2vec import Word2Vec, train_cbow_pair, train_sg_pair, train_batch_sg, score_cbow_pair, score_sg_pair, score_sentence_sg
 from gensim.models.doc2vec import Doc2Vec, DocvecsArray, Doctag
 from gensim.models.keyedvectors import KeyedVectors
 from six.moves import xrange, zip
@@ -39,12 +40,11 @@ logger = logging.getLogger(__name__)
 from gensim.models.meta_doc2vec_inner import train_meta_document_dm_concat, train_meta_document_dm, get_max_feature_size
 
 try:
-    from gensim.models.meta_doc2vec_inner import train_meta_document_dm_concat, train_meta_document_dm, get_max_feature_size
-    #from gensim.models.doc2vec_inner import train_document_dbow, train_document_dm, train_document_dm_concat
-    #from gensim.models.word2vec_inner import FAST_VERSION  # blas-adaptation shared from word2vec
+    from gensim.models.meta_doc2vec_inner import train_meta_document_dm_concat, train_meta_document_dm, train_meta_document_dbow, get_max_feature_size
+    from gensim.models.meta_doc2vec_inner import score_meta_document_dbow, score_meta_document_dm, score_meta_document_dm_concat
+    from gensim.models.word2vec_inner import FAST_VERSION  # blas-adaptation shared from word2vec
     logger.debug('Fast version of {0} is being used'.format(__name__))
 except ImportError:
-    quit()
     logger.warning('Slow version of {0} is being used'.format(__name__))
     # failed... fall back to plain numpy (20-80x slower training than the above)
     FAST_VERSION = -1
@@ -77,19 +77,7 @@ except ImportError:
 
         """
         raise NotImplementedError("DBOW not implemented for meta info just yet... what does it mean?")
-        if doctag_vectors is None:
-            doctag_vectors = model.docvecs.doctag_syn0
-        if doctag_locks is None:
-            doctag_locks = model.docvecs.doctag_syn0_lockf
-        if train_words and learn_words:
-            train_batch_sg(model, [doc_words], alpha, work)
-        for doctag_index in doctag_indexes:
-            for word in doc_words:
-                train_sg_pair(model, word, doctag_index, alpha, learn_vectors=learn_doctags,
-                              learn_hidden=learn_hidden, context_vectors=doctag_vectors,
-                              context_locks=doctag_locks)
 
-        return len(doc_words)
 
     def train_meta_document_dm(model, doc_words, doctag_indexes, doc_features, alpha, work=None, neu1=None,
                                learn_doctags=True, learn_words=True, learn_hidden=True,
@@ -230,6 +218,86 @@ except ImportError:
         return len(padded_document_indexes) - pre_pad_count - post_pad_count
 
 
+    def score_meta_document_dm_concat(model, doc_words, doctag_indexes, doc_features, work=None, neu1=None):
+        """
+        Obtain likelihood score for a single document in a fitted DBOW representaion.
+
+        This is the non-optimized, Python version. If you have cython installed, gensim
+        will use the optimized version from word2vec_inner instead.
+
+        """
+        log_prob_sentence = 0.0
+        if model.negative:
+            raise RuntimeError("scoring is only available for HS=True")
+
+        doctag_vectors = model.docvecs.doctag_syn0
+        word_vectors = model.wv.syn0
+
+        doctag_len = len(doctag_indexes)
+
+        word_vocabs = [model.wv.vocab[w] for w in doc_words if w in model.wv.vocab]
+
+        null_word = model.wv.vocab['\0']
+        pre_pad_count = model.window
+        post_pad_count = model.window
+        padded_document_indexes = (
+            (pre_pad_count * [null_word.index])  # pre-padding
+            + [word.index for word in word_vocabs if word is not None]  # elide out-of-Vocabulary words
+            + (post_pad_count * [null_word.index])  # post-padding
+        )
+
+        for pos in range(pre_pad_count, len(padded_document_indexes) - post_pad_count):
+            if model.asymmetric_window:
+                word_context_indexes = (
+                    padded_document_indexes[(pos - pre_pad_count): pos]  # preceding words
+                )
+            else:
+                word_context_indexes = (
+                    padded_document_indexes[(pos - pre_pad_count): pos]  # preceding words
+                    + padded_document_indexes[(pos + 1):(pos + 1 + post_pad_count)]  # following words
+                )
+
+            word_context_len = len(word_context_indexes)
+            predict_word = model.wv.vocab[model.wv.index2word[padded_document_indexes[pos]]]
+            l1 = concatenate((doctag_vectors[doctag_indexes], word_vectors[word_context_indexes])).ravel()
+            l1 = concatenate((l1, doc_features))
+            log_prob_sentence += score_cbow_pair(model, predict_word, l1)
+        return log_prob_sentence
+
+
+    def score_meta_document_dm(model, doc_words, doctag_indexes, doc_features, work=None, neu1=None):
+        """
+        Obtain likelihood score for a single document in a fitted CBOW representaion.
+
+        This is the non-optimized, Python version. If you have cython installed, gensim
+        will use the optimized version from word2vec_inner instead.
+
+        """
+        log_prob_sentence = 0.0
+        if model.negative:
+            raise RuntimeError("scoring is only available for HS=True")
+
+        doctag_vectors = model.docvecs.doctag_syn0
+        doctag_len = len(doctag_indexes)
+
+        word_vocabs = [model.wv.vocab[w] for w in doc_words if w in model.wv.vocab]
+        for pos, word in enumerate(word_vocabs):
+            if word is None:
+                continue  # OOV word in the input sentence => skip
+
+            start = max(0, pos - model.window)
+            end = (pos + model.window + 1) if not model.asymmetric_window else pos
+            window_pos = enumerate(word_vocabs[start:end], start)
+            word2_indices = [word2.index for pos2, word2 in window_pos if (word2 is not None and pos2 != pos)]
+
+            l1 = np_sum(model.wv.syn0[word2_indices], axis=0) + np_sum(doctag_vectors[doctag_indexes], axis=0) + doc_features
+            count = len(word2_indices) + len(doctag_indexes) + 1.
+            if model.cbow_mean and count > 1 :
+                l1 /= count
+            log_prob_sentence += score_cbow_pair(model, word, l1)
+        return log_prob_sentence
+
+
 class TaggedMetaDocument(namedtuple('TaggedMetaDocument', 'words tags features')):
     """
     A single document, made up of `words` (a list of unicode string tokens)
@@ -316,3 +384,137 @@ class MetaDoc2Vec(Doc2Vec):
         """
         print("TODO?")
         raise NotImplementedError()
+
+    def score(self, documents, total_documents=int(1e6), chunksize=100, queue_factor=2, report_delay=1):
+        """
+        Score the log probability for a sequence of documents (can be a once-only generator stream).
+        Each document must must be a TaggedDocument
+        This does not change the fitted model in any way (see Word2Vec.train() for that).
+
+        We have currently only implemented score for the hierarchical softmax scheme,
+        so you need to have run word2vec with hs=1 and negative=0 for this to work.
+
+        Note that you should specify total_documents; we'll run into problems if you ask to
+        score more than this number of sentences but it is inefficient to set the value too high.
+
+        See the article by [taddy]_ and the gensim demo at [deepir]_ for examples of how to use such scores in document classification.
+
+        .. [taddy] Taddy, Matt.  Document Classification by Inversion of Distributed Language Representations, in Proceedings of the 2015 Conference of the Association of Computational Linguistics.
+        .. [deepir] https://github.com/piskvorky/gensim/blob/develop/docs/notebooks/deepir.ipynb
+
+        """
+        if FAST_VERSION < 0:
+            warnings.warn("C extension compilation failed, scoring will be slow. "
+                          "Install a C compiler and reinstall gensim for fastness.")
+
+        logger.info(
+            "scoring documents with %i workers on %i vocabulary and %i features, "
+            "using sg=%s hs=%s sample=%s and negative=%s",
+            self.workers, len(self.wv.vocab), self.layer1_size, self.sg, self.hs, self.sample, self.negative)
+
+        if not self.wv.vocab:
+            raise RuntimeError("you must first build vocabulary before scoring new data")
+
+        if not self.hs:
+            raise RuntimeError("We have currently only implemented score \
+                    for the hierarchical softmax scheme, so you need to have \
+                    run word2vec with hs=1 and negative=0 for this to work.")
+
+        def worker_loop():
+            """Compute log probability for each sentence, lifting lists of sentences from the jobs queue."""
+            while True:
+                job = job_queue.get()
+                if job is None:  # signal to finish
+                    break
+                ns = 0
+                for sentence_id, sentence in job:
+                    work = zeros(1, dtype=REAL)  # for sg hs, we actually only need one memory loc (running sum)
+                    neu1 = matutils.zeros_aligned(self.layer1_size, dtype=REAL)
+                    indexed_doctags = self.docvecs.indexed_doctags(sentence.tags)
+                    doctag_indexes, doctag_vectors, _, _ = indexed_doctags
+                    doc_features = sentence.features
+
+                    if sentence_id >= total_documents:
+                        break
+                    if self.sg:
+                        score = score_meta_document_dbow(self, sentence.words, doctag_indexes, doc_features, work)
+                    elif self.dm_concat:
+                        if len(doctag_indexes) != len(sentence.tags):
+                            for s in sentence.tags:
+                                if s not in self.docvecs:
+                                    print("Error: didn't see {} in training.".format(s))
+                                    print("Giving up!")
+                                    score = np.nan
+                        else:
+                            score_np = score_meta_document_dm_concat_np(self, sentence.words, doctag_indexes, doc_features, work, neu1)
+                            score_cy = score_meta_document_dm_concat(self, sentence.words, doctag_indexes, doc_features, work, neu1)
+                            print(score_np, score_cy)
+                            score = score_cy
+                    else:
+                        score_np = score_meta_document_dm_np(self, sentence.words, doctag_indexes, doc_features, work, neu1)
+                        score_cy = score_meta_document_dm(self, sentence.words, doctag_indexes, doc_features, work, neu1)
+                        print(score_np, score_cy)
+                        score = score_cy
+                    sentence_scores[sentence_id] = score
+                    ns += 1
+                progress_queue.put(ns)  # report progress
+
+        start, next_report = default_timer(), 1.0
+        # buffer ahead only a limited number of jobs.. this is the reason we can't simply use ThreadPool :(
+        job_queue = Queue(maxsize=queue_factor * self.workers)
+        progress_queue = Queue(maxsize=(queue_factor + 1) * self.workers)
+
+        workers = [threading.Thread(target=worker_loop) for _ in xrange(self.workers)]
+        for thread in workers:
+            thread.daemon = True  # make interrupting the process with ctrl+c easier
+            thread.start()
+
+        sentence_count = 0
+        sentence_scores = matutils.zeros_aligned(total_documents, dtype=REAL)
+
+        push_done = False
+        done_jobs = 0
+        jobs_source = enumerate(utils.grouper(enumerate(documents), chunksize))
+
+        # fill jobs queue with (id, sentence) job items
+        while True:
+            try:
+                job_no, items = next(jobs_source)
+                if (job_no - 1) * chunksize > total_documents:
+                    logger.warning(
+                        "terminating after %i sentences (set higher total_documents if you want more).",
+                        total_documents)
+                    job_no -= 1
+                    raise StopIteration()
+                logger.debug("putting job #%i in the queue", job_no)
+                job_queue.put(items)
+            except StopIteration:
+                logger.info(
+                    "reached end of input; waiting to finish %i outstanding jobs",
+                    job_no - done_jobs + 1)
+                for _ in xrange(self.workers):
+                    job_queue.put(None)  # give the workers heads up that they can finish -- no more work!
+                push_done = True
+            try:
+                while done_jobs < (job_no + 1) or not push_done:
+                    ns = progress_queue.get(push_done)  # only block after all jobs pushed
+                    sentence_count += ns
+                    done_jobs += 1
+                    elapsed = default_timer() - start
+                    if elapsed >= next_report:
+                        logger.info(
+                            "PROGRESS: at %.2f%% sentences, %.0f sentences/s",
+                            100.0 * sentence_count, sentence_count / elapsed)
+                        next_report = elapsed + report_delay  # don't flood log, wait report_delay seconds
+                else:
+                    # loop ended by job count; really done
+                    break
+            except Empty:
+                pass  # already out of loop; continue to next push
+
+        elapsed = default_timer() - start
+        self.clear_sims()
+        logger.info(
+            "scoring %i sentences took %.1fs, %.0f sentences/s",
+            sentence_count, elapsed, sentence_count / elapsed)
+        return sentence_scores[:sentence_count]
