@@ -78,11 +78,8 @@ from gensim.corpora.dictionary import Dictionary
 from six import string_types, iteritems
 from six.moves import xrange
 from scipy import stats
-try:
-    from keras.layers import Embedding
-    KERAS_INSTALLED = True
-except ImportError:
-    KERAS_INSTALLED = False
+
+KERAS_INSTALLED = False
 
 
 logger = logging.getLogger(__name__)
