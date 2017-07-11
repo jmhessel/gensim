@@ -1094,7 +1094,7 @@ class Doc2Vec(Word2Vec):
                     if elapsed >= next_report:
                         logger.info(
                             "PROGRESS: at %.2f%% sentences, %.0f sentences/s",
-                            100.0 * sentence_count, sentence_count / elapsed)
+                            100.0 * sentence_count / total_documents, sentence_count / elapsed)
                         next_report = elapsed + report_delay  # don't flood log, wait report_delay seconds
                 else:
                     # loop ended by job count; really done
